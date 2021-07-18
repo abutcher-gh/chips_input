@@ -1,5 +1,7 @@
 library chips_input;
 
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,7 +24,10 @@ class ChipsInput<T extends Object> extends StatefulWidget {
     Key? key,
     required this.chipBuilder,
     this.suggestionBuilder,
+    this.defaultSuggestionsHeight,
     required this.findSuggestions,
+    this.allowDuplicates = false,
+    this.alwaysShowSuggestionsWhenFocused = true,
     this.optionsViewBuilder,
     this.maxChips,
     this.initialValue = const [],
@@ -125,6 +130,16 @@ class ChipsInput<T extends Object> extends StatefulWidget {
 
   /// The inital value. Must be a List of T
   final SuggestionBuilder<T>? suggestionBuilder;
+
+  /// The optional height of the default suggestion material.
+  final double? defaultSuggestionsHeight;
+
+  /// Whether duplicate chip values are permitted.
+  final bool allowDuplicates;
+
+  /// Allow the user to select from suggestions until there are no
+  /// more available or until the control is unfocused.
+  final bool alwaysShowSuggestionsWhenFocused;
 
   /// The inital value. Must be a List of T
   final List<T> initialValue;
@@ -491,6 +506,8 @@ class ChipsInput<T extends Object> extends StatefulWidget {
   ChipsInputState<T> createState() => ChipsInputState<T>();
 }
 
+const space = '\u200B';
+
 class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
     with RestorationMixin {
   RestorableTextEditingController? _controller;
@@ -498,7 +515,6 @@ class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
       widget.controller ?? _controller!.value;
 
   List<T> _chips = [];
-  final space = '\u200B'; //'\u200B'; // '*';
   FocusNode? _focusNode;
   FocusNode get _effectiveFocusNode =>
       widget.focusNode ?? (_focusNode ??= FocusNode());
@@ -592,15 +608,21 @@ class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
   }
 
   void onSubmitted(String value) {
-    final suggestions = widget.findSuggestions(value.replaceAll("$space", ""));
-    if (suggestions.isNotEmpty) {
-      _addChip(suggestions.first);
-
+    value = value.replaceAll("$space", "");
+    if (value.isEmpty) {
+      _effectiveFocusNode.unfocus();
+      return;
+    }
+    final availableOptions = _getAvailableOptions(value);
+    if (availableOptions.isNotEmpty) {
+      _addChip(availableOptions.first);
       final String selectionString = _chips.map((e) => "$space").join();
       _effectiveController.value = TextEditingValue(
         selection: TextSelection.collapsed(offset: selectionString.length),
         text: selectionString,
       );
+      if (widget.alwaysShowSuggestionsWhenFocused)
+        _effectiveFocusNode.requestFocus();
     } else {
       _effectiveFocusNode.unfocus();
     }
@@ -628,6 +650,7 @@ class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
         onSelected: onSelected,
         options: options,
         suggestionBuilder: widget.suggestionBuilder!,
+        height: widget.defaultSuggestionsHeight,
       );
     }
 
@@ -647,14 +670,14 @@ class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
           if (textEditingValue.text.length < _chips.length) {
             _deleteLastChips(textEditingValue.text.length);
           }
-          final options = widget
-              .findSuggestions(textEditingValue.text.replaceAll("$space", ""));
-          final notUsedOptions =
-              options.where((r) => !_chips.contains(r)).toList(growable: false);
-          return notUsedOptions;
+          return _getAvailableOptions(textEditingValue.text.replaceAll("$space", ""));
         },
         onSelected: (T option) {
           _addChip(option);
+          if (widget.alwaysShowSuggestionsWhenFocused) {
+            focusNode.unfocus();
+            Timer.run(() => focusNode.requestFocus());
+          }
         },
         displayStringForOption: (T option) {
           return [..._chips.map((e) => "$space"), "$space"].join();
@@ -713,9 +736,8 @@ class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
                 buildCounter: widget.buildCounter,
                 decoration: InputDecoration(
                     border: InputBorder.none,
-                    hintText: widget.decoration?.hintText,
+                    hintText: _chips.isEmpty? widget.decoration?.hintText : null,
                     counterText: "",
-                    isDense: true,
                     contentPadding: EdgeInsets.symmetric(vertical: 5)),
               ),
             )
@@ -735,8 +757,9 @@ class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
                 child: child,
               ),
               child: Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
                 spacing: 4,
-                runSpacing: 4,
+                runSpacing: -4,
                 children: chipsAndTextField,
               ),
             ),
@@ -746,15 +769,25 @@ class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
             ? _emptyOptionsViewBuilder
             : widget.optionsViewBuilder ?? _defaultOptionsViewBuilder);
   }
+
+  List<T> _getAvailableOptions(String input) {
+    final options = widget.findSuggestions(input);
+    if (widget.allowDuplicates)
+      return options;
+    final availableOptions =
+      options.where((r) => !_chips.contains(r)).toList(growable: false);
+    return availableOptions;
+  }
 }
 
 // The default Material-style Autocomplete options.
 class _DefaultOptionsViewBuilder<T extends Object> extends StatelessWidget {
-  const _DefaultOptionsViewBuilder({
+  _DefaultOptionsViewBuilder({
     Key? key,
     required this.onSelected,
     required this.options,
     required this.suggestionBuilder,
+    this.height,
   }) : super(key: key);
 
   final AutocompleteOnSelected<T> onSelected;
@@ -763,24 +796,36 @@ class _DefaultOptionsViewBuilder<T extends Object> extends StatelessWidget {
 
   final SuggestionBuilder<T> suggestionBuilder;
 
+  final double? height;
+
+  final ScrollController scrollController = ScrollController();
+
   @override
   Widget build(BuildContext context) {
     return Align(
       alignment: Alignment.topLeft,
       child: Material(
         elevation: 4.0,
-        child: ListView.builder(
-          padding: EdgeInsets.all(8.0),
-          itemCount: options.length,
-          itemBuilder: (BuildContext context, int index) {
-            final T option = options.elementAt(index);
-            return GestureDetector(
-              onTap: () {
-                onSelected(option);
+        child: Container(
+          height: height,
+          child: Scrollbar(
+            isAlwaysShown: true,
+            controller: scrollController,
+            child: ListView.builder(
+              controller: scrollController,
+              padding: EdgeInsets.all(8.0),
+              itemCount: options.length,
+              itemBuilder: (BuildContext context, int index) {
+                final T option = options.elementAt(index);
+                return InkWell(
+                  onTap: () {
+                    onSelected(option);
+                  },
+                  child: suggestionBuilder(context, option),
+                );
               },
-              child: suggestionBuilder(context, option),
-            );
-          },
+            ),
+          ),
         ),
       ),
     );
