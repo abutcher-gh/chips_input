@@ -583,6 +583,22 @@ class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
       widget.onChanged!(_chips.toList(growable: false));
   }
 
+  void _addChipInteractive(T newValue) {
+    _addChip(newValue);
+    final String selectionString = _chips.map((e) => "$space").join();
+    // XXX: Two separate updates here to work around an issue with
+    // XXX: Flutter 2.6 RawAutocomplete _selection being left set to
+    // XXX: the last selected item and thus causing _shouldShowOptions
+    // XXX: to return false.  Once a chip has been added, the selection
+    // XXX: should be reset.  This two-stage update somehow causes
+    // XXX: the reset of the selection.  Doing it in an single
+    // XXX: .value = TextEditingValue(...).
+    _effectiveController.text = selectionString;
+    _effectiveController.selection = TextSelection.collapsed(offset: selectionString.length);
+    if (widget.alwaysShowSuggestionsWhenFocused)
+      _effectiveFocusNode.requestFocus();
+  }
+
   void _deleteLastChips(int numKeepChips) {
     if (numKeepChips < 0) {
       numKeepChips = 0;
@@ -614,18 +630,10 @@ class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
       return;
     }
     final availableOptions = _getAvailableOptions(value);
-    if (availableOptions.isNotEmpty) {
-      _addChip(availableOptions.first);
-      final String selectionString = _chips.map((e) => "$space").join();
-      _effectiveController.value = TextEditingValue(
-        selection: TextSelection.collapsed(offset: selectionString.length),
-        text: selectionString,
-      );
-      if (widget.alwaysShowSuggestionsWhenFocused)
-        _effectiveFocusNode.requestFocus();
-    } else {
+    if (availableOptions.isNotEmpty)
+      _addChipInteractive(availableOptions.first);
+    else
       _effectiveFocusNode.unfocus();
-    }
   }
 
   @override
@@ -673,11 +681,7 @@ class ChipsInputState<T extends Object> extends State<ChipsInput<T>>
           return _getAvailableOptions(textEditingValue.text.replaceAll("$space", ""));
         },
         onSelected: (T option) {
-          _addChip(option);
-          if (widget.alwaysShowSuggestionsWhenFocused) {
-            focusNode.unfocus();
-            Timer.run(() => focusNode.requestFocus());
-          }
+          _addChipInteractive(option);
         },
         displayStringForOption: (T option) {
           return [..._chips.map((e) => "$space"), "$space"].join();
